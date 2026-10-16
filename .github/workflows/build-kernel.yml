@@ -34,30 +34,42 @@ jobs:
           sudo apt-get install -y -qq build-essential bc bison flex libssl-dev libelf-dev \
             python3 zip unzip curl git cpio rsync gcc-aarch64-linux-gnu
 
-      - name: Fetch AOSP clang
+      - name: Cache clang toolchain
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: toolchain/clang
+          key: clang-${{ env.CLANG_VER }}-msft-v1
+
+      - name: Fetch AOSP clang (sparse checkout from AOSP mirror)
+        if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          mkdir -p toolchain/clang
           ok=0
-          for base in \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main" \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release" \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master" \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-16.0.0_r1" ; do
-            url="$base/${CLANG_VER}.tar.gz"
-            echo "== trying $url"
-            if curl -fsSL --retry 2 --connect-timeout 20 -o /tmp/clang.tar.gz "$url"; then
-              echo "== downloaded from $url"
-              ok=1
-              break
+          for branch in android16-qpr2-release android16-release main master; do
+            echo "== trying branch: $branch"
+            rm -rf clang-src
+            git clone -q --filter=blob:none --no-checkout --depth 1 -b "$branch" \
+              https://github.com/msft-mirror-aosp/platform.prebuilts.clang.host.linux-x86.git clang-src || continue
+            if ( cd clang-src && git sparse-checkout init --cone && \
+                 git sparse-checkout set "$CLANG_VER" && git checkout -q ); then
+              if [ -x "clang-src/$CLANG_VER/bin/clang" ]; then ok=1; break; fi
             fi
           done
           if [ "$ok" != "1" ]; then
-            echo "!! could not download ${CLANG_VER}"
+            echo "!! unable to fetch $CLANG_VER"
             exit 1
           fi
-          tar -xzf /tmp/clang.tar.gz -C toolchain/clang
+          mkdir -p toolchain
+          mv "clang-src/$CLANG_VER" toolchain/clang
+          rm -rf clang-src
+
+      - name: Verify toolchain
+        run: |
+          set -e
           toolchain/clang/bin/clang --version
+          toolchain/clang/bin/ld.lld --version || true
+          ls toolchain/clang/bin | head -12
 
       - name: Clone kernel source at exact commit
         run: |
