@@ -118,10 +118,24 @@ jobs:
           cat >> out/.config <<'EOF'
 
           # ---- KernelSU-Next (legacy, non-GKI) ----
+          # 采用 kprobes hook 模式。
+          # 最初用的 CONFIG_KSU_SYSCALL_TABLE_HOOK 在本内核实机失败（已刷机验证）：
+          #   KernelSU: sth: sys_call_table=0xffffff92238009c8
+          #   KernelSU: failed to find phy addr for patch dst addr 0xffffff92238010b0
+          #   KernelSU: sth: 0/4 syscalls hooked
+          # 原因是 legacy 的 phys_from_virt() 在本内核 3 级页表
+          # （PGTABLE_LEVELS=3 走 __ARCH_USE_5LEVEL_HACK，p4d/pud 均折叠进 pgd）
+          # 下无法遍历出物理地址；而 reboot syscall hook 是管理器装 fd 的唯一入口，
+          # 所以管理器只能显示"未集成"。
+          # kprobes 模式走内核原生 register_kprobe，不触碰页表/patch 内存。
+          # 同机型同内核版本（gauguin 4.19.325）已有成功验证。
+          CONFIG_KPROBES=y
+          CONFIG_KRETPROBES=y
+          CONFIG_KPROBE_EVENTS=y
           CONFIG_KSU=y
-          CONFIG_KSU_SYSCALL_TABLE_HOOK=y
+          CONFIG_KSU_KPROBES_HOOK=y
+          # CONFIG_KSU_SYSCALL_TABLE_HOOK is not set
           # CONFIG_KSU_MANUAL_HOOK is not set
-          # CONFIG_KSU_KPROBES_HOOK is not set
           # CONFIG_KSU_DEBUG is not set
 
           # ---- 容忍度调整 ----
