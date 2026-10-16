@@ -132,8 +132,8 @@ jobs:
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
             KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
-            drivers/kernelsu/kernelsu.o
-          echo "== KernelSU object built OK"
+            drivers/kernelsu/
+          echo "== KernelSU objects built OK"
 
       - name: Build kernel Image
         run: |
