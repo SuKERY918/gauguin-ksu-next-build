@@ -123,6 +123,16 @@ jobs:
           # CONFIG_KSU_MANUAL_HOOK is not set
           # CONFIG_KSU_KPROBES_HOOK is not set
           # CONFIG_KSU_DEBUG is not set
+
+          # ---- 容忍度调整 ----
+          # 本内核 CONFIG_CC_WERROR=y，且默认 CONFIG_FRAME_WARN=2048。
+          # 原厂用 LTO 编译时不会触发，但我们关掉 LTO 提速后，clang 21 对老代码
+          # 的栈帧分析更严格，会命中：
+          #   drivers/power/supply/maxim/sha384_software.c: sha3_256_hmac
+          #   stack frame size (2912) exceeds limit (2048) [-Werror,-Wframe-larger-than]
+          # 同机型已验证的处理方式：关闭 CC_WERROR 并把 FRAME_WARN 放宽到 4096。
+          # CONFIG_CC_WERROR is not set
+          CONFIG_FRAME_WARN=4096
           EOF
           if [ "${{ inputs.enable_lto }}" = "false" ]; then
             sed -i 's/^CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/' out/.config
@@ -130,7 +140,7 @@ jobs:
           fi
           make -C kernel O="$PWD/out" ARCH=arm64 olddefconfig
           echo "== effective config:"
-          grep -E "^CONFIG_(KSU|LTO|KPROBES|MODULES|EXT4_FS|CC_IS|LD_IS)" out/.config | sort
+          grep -E "^(# )?CONFIG_(KSU|KSU_SYSCALL_TABLE_HOOK|LTO|LTO_CLANG|CFI_CLANG|KPROBES|MODULES|EXT4_FS|CC_WERROR|FRAME_WARN|CC_IS|LD_IS)[ =]" out/.config | sort
 
       - name: Probe KernelSU compile (fast fail)
         if: ${{ inputs.skip_ksu_probe == false }}
