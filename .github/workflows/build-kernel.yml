@@ -97,6 +97,13 @@ jobs:
           mkdir -p kernel/drivers/kernelsu/include/uapi
           cp ksun/uapi/*.h kernel/drivers/kernelsu/include/uapi/
           echo "== uapi headers:"; ls kernel/drivers/kernelsu/include/uapi/
+          # 修掉 legacy 分支 patch_memory.c 的宏污染：它在 #include <linux/uaccess.h>
+          # 之前 #define copy_to_kernel_nofault(...)，而本内核 uaccess.h:306 正好
+          # 声明了同名函数，导致声明被宏展开、clang 报 type specifier missing。
+          # 详见 scripts/fix_patch_memory.py
+          python3 "$GITHUB_WORKSPACE/scripts/fix_patch_memory.py" \
+            kernel/drivers/kernelsu/hook/patch_memory.c
+          sed -n '24,36p' kernel/drivers/kernelsu/hook/patch_memory.c
           grep -q "kernelsu" kernel/drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> kernel/drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' kernel/drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' kernel/drivers/Kconfig
           echo "== drivers/Makefile tail:"; tail -3 kernel/drivers/Makefile
