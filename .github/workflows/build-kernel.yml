@@ -89,7 +89,14 @@ jobs:
           set -e
           git clone -q --depth 1 -b "$KSU_BRANCH" "$KSU_REPO" ksun
           echo "== KSU commit: $(git -C ksun log -1 --format='%H %cI %s')"
-          cp -r ksun/kernel kernel/drivers/kernelsu
+          # kernel/include/uapi 在仓库里是指向 ../../uapi 的符号链接。
+          # cp -r 会把符号链接原样复制 -> 目标处变成断链 -> uapi/*.h 找不到。
+          # 必须用 -L 解引用；再显式铺一遍 uapi 头文件作为双保险。
+          cp -rL ksun/kernel kernel/drivers/kernelsu
+          rm -rf kernel/drivers/kernelsu/include/uapi
+          mkdir -p kernel/drivers/kernelsu/include/uapi
+          cp ksun/uapi/*.h kernel/drivers/kernelsu/include/uapi/
+          echo "== uapi headers:"; ls kernel/drivers/kernelsu/include/uapi/
           grep -q "kernelsu" kernel/drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> kernel/drivers/Makefile
           grep -q 'drivers/kernelsu/Kconfig' kernel/drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' kernel/drivers/Kconfig
           echo "== drivers/Makefile tail:"; tail -3 kernel/drivers/Makefile
@@ -123,27 +130,28 @@ jobs:
         run: |
           set -e
           export PATH="$PWD/toolchain/clang/bin:$PATH"
-          make -C kernel O="$PWD/out" ARCH=arm64 -j"$(nproc)" \
-            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
-            KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
-            prepare 2>&1 | tail -20
-          make -C kernel O="$PWD/out" ARCH=arm64 -j"$(nproc)" \
-            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
-            KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
-            drivers/kernelsu/
+          MK="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- \
+              CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
+              KSU_VERSION_OVERRIDE=$KSU_VERSION_OVERRIDE_VAL \
+              KSU_VERSION_TAG_OVERRIDE=$KSU_TAG_OVERRIDE_VAL"
+          make -C kernel O="$PWD/out" -j"$(nproc)" $MK prepare 2>&1 | tail -5
+          # flask.h 等 SELinux 生成文件必须先生成，否则 KSU 编译会报
+          # security/selinux/include/security.h: flask.h file not found
+          make -C kernel O="$PWD/out" -j"$(nproc)" $MK security/selinux/ 2>&1 | tail -5
+          make -C kernel O="$PWD/out" -j"$(nproc)" $MK drivers/kernelsu/
           echo "== KernelSU objects built OK"
 
       - name: Build kernel Image
         run: |
           set -e
           export PATH="$PWD/toolchain/clang/bin:$PATH"
-          make -C kernel O="$PWD/out" ARCH=arm64 -j"$(nproc)" \
-            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
-            KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
-            Image
+          MK="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- \
+              CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
+              KSU_VERSION_OVERRIDE=$KSU_VERSION_OVERRIDE_VAL \
+              KSU_VERSION_TAG_OVERRIDE=$KSU_TAG_OVERRIDE_VAL"
+          make -C kernel O="$PWD/out" -j"$(nproc)" $MK Image
           ls -l out/arch/arm64/boot/Image
           sha256sum out/arch/arm64/boot/Image
 
