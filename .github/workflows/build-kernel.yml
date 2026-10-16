@@ -1,0 +1,153 @@
+name: Build gauguin kernel + KernelSU-Next (legacy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_lto:
+        description: 'Enable LTO_CLANG (matches stock build, much slower)'
+        type: boolean
+        default: false
+      skip_ksu_probe:
+        description: 'Skip the fast KernelSU-only compile probe'
+        type: boolean
+        default: false
+
+env:
+  KERNEL_REPO: https://github.com/PixelOS-Devices/android_kernel_xiaomi_gauguin
+  KERNEL_COMMIT: a0a88748828bdf4ad9a66c09fab9dd29e566e721
+  KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next
+  KSU_BRANCH: legacy
+  KSU_VERSION_OVERRIDE_VAL: '33355'
+  KSU_TAG_OVERRIDE_VAL: v3.4.2
+  CLANG_VER: clang-r563880c
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential bc bison flex libssl-dev libelf-dev \
+            python3 zip unzip curl git cpio rsync gcc-aarch64-linux-gnu
+
+      - name: Fetch AOSP clang
+        run: |
+          set -e
+          mkdir -p toolchain/clang
+          ok=0
+          for base in \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-16.0.0_r1" ; do
+            url="$base/${CLANG_VER}.tar.gz"
+            echo "== trying $url"
+            if curl -fsSL --retry 2 --connect-timeout 20 -o /tmp/clang.tar.gz "$url"; then
+              echo "== downloaded from $url"
+              ok=1
+              break
+            fi
+          done
+          if [ "$ok" != "1" ]; then
+            echo "!! could not download ${CLANG_VER}"
+            exit 1
+          fi
+          tar -xzf /tmp/clang.tar.gz -C toolchain/clang
+          toolchain/clang/bin/clang --version
+
+      - name: Clone kernel source at exact commit
+        run: |
+          set -e
+          git init -q kernel
+          cd kernel
+          git remote add origin "$KERNEL_REPO"
+          git fetch --depth 1 origin "$KERNEL_COMMIT"
+          git checkout -q FETCH_HEAD
+          echo "== HEAD: $(git log -1 --format='%H %cI %s')"
+          echo "== localversion-cip: $(cat localversion-cip 2>/dev/null || echo none)"
+          echo "== localversion-st : $(cat localversion-st 2>/dev/null || echo none)"
+          sed -n '1,6p' Makefile
+
+      - name: Integrate KernelSU-Next (legacy)
+        run: |
+          set -e
+          git clone -q --depth 1 -b "$KSU_BRANCH" "$KSU_REPO" ksun
+          echo "== KSU commit: $(git -C ksun log -1 --format='%H %cI %s')"
+          cp -r ksun/kernel kernel/drivers/kernelsu
+          grep -q "kernelsu" kernel/drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> kernel/drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' kernel/drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' kernel/drivers/Kconfig
+          echo "== drivers/Makefile tail:"; tail -3 kernel/drivers/Makefile
+          echo "== drivers/Kconfig:"; grep -n "kernelsu" kernel/drivers/Kconfig
+
+      - name: Configure kernel
+        run: |
+          set -e
+          export PATH="$PWD/toolchain/clang/bin:$PATH"
+          make -C kernel O="$PWD/out" ARCH=arm64 vendor/lito-perf_defconfig
+          cat kernel/arch/arm64/configs/vendor/xiaomi/gauguin.config >> out/.config
+          cat >> out/.config <<'EOF'
+
+          # ---- KernelSU-Next (legacy, non-GKI) ----
+          CONFIG_KSU=y
+          CONFIG_KSU_SYSCALL_TABLE_HOOK=y
+          # CONFIG_KSU_MANUAL_HOOK is not set
+          # CONFIG_KSU_KPROBES_HOOK is not set
+          # CONFIG_KSU_DEBUG is not set
+          EOF
+          if [ "${{ inputs.enable_lto }}" = "false" ]; then
+            sed -i 's/^CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/' out/.config
+            sed -i 's/^CONFIG_LTO=y/# CONFIG_LTO is not set/' out/.config
+          fi
+          make -C kernel O="$PWD/out" ARCH=arm64 olddefconfig
+          echo "== effective config:"
+          grep -E "^CONFIG_(KSU|LTO|KPROBES|MODULES|EXT4_FS|CC_IS|LD_IS)" out/.config | sort
+
+      - name: Probe KernelSU compile (fast fail)
+        if: ${{ inputs.skip_ksu_probe == false }}
+        run: |
+          set -e
+          export PATH="$PWD/toolchain/clang/bin:$PATH"
+          make -C kernel O="$PWD/out" ARCH=arm64 -j"$(nproc)" \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
+            KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
+            prepare 2>&1 | tail -20
+          make -C kernel O="$PWD/out" ARCH=arm64 -j"$(nproc)" \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
+            KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
+            drivers/kernelsu/kernelsu.o
+          echo "== KernelSU object built OK"
+
+      - name: Build kernel Image
+        run: |
+          set -e
+          export PATH="$PWD/toolchain/clang/bin:$PATH"
+          make -C kernel O="$PWD/out" ARCH=arm64 -j"$(nproc)" \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- CLANG_TRIPLE=aarch64-linux-gnu- LLVM_IAS=1 \
+            KSU_VERSION_OVERRIDE="$KSU_VERSION_OVERRIDE_VAL" KSU_VERSION_TAG_OVERRIDE="$KSU_TAG_OVERRIDE_VAL" \
+            Image
+          ls -l out/arch/arm64/boot/Image
+          sha256sum out/arch/arm64/boot/Image
+
+      - name: Collect outputs
+        run: |
+          set -e
+          mkdir -p dist
+          cp out/arch/arm64/boot/Image dist/Image
+          cp out/.config dist/kernel.config
+          echo "== KSU symbols present in vmlinux:"
+          grep -c "ksu_" out/vmlinux.map 2>/dev/null || true
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gauguin-ksu-image
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
